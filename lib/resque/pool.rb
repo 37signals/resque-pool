@@ -8,16 +8,14 @@ require 'yaml'
 
 module Resque
   class Pool
-    include Logging
-    attr_reader :config
-    attr_reader :workers
-
-    # CONSTANTS {{{
     SIG_QUEUE_MAX_SIZE = 5
     DEFAULT_WORKER_INTERVAL = 5
     QUEUE_SIGS = [ :QUIT, :INT, :TERM, :USR1, :USR2, :CONT, :HUP, :WINCH, ]
-    CHUNK_SIZE=(16 * 1024)
-    # }}}
+    CHUNK_SIZE = (16 * 1024)
+
+    include Logging
+    attr_reader :config
+    attr_reader :workers
 
     def initialize(config)
       init_config(config)
@@ -70,13 +68,14 @@ module Resque
     # }}}
     # Config: load config and config file {{{
 
+    def config_file
+      @config_file || (!@config && ::Resque::Pool.choose_config_file)
+    end
+
     def init_config(config)
-      unless config
-        raise ArgumentError,
-          "No configuration found. Please setup config/resque-pool.yml"
-      end
-      if config.kind_of? String
-        @config_file = config.to_s
+      case config
+      when String, nil
+        @config_file = config
       else
         @config = config.dup
       end
@@ -84,7 +83,11 @@ module Resque
     end
 
     def load_config
-      @config_file and @config = YAML.load_file(@config_file)
+      if config_file
+        @config = YAML.load_file(config_file)
+      else
+        @config ||= {}
+      end
       environment and @config[environment] and config.merge!(@config[environment])
       config.delete_if {|key, value| value.is_a? Hash }
     end
@@ -124,9 +127,14 @@ module Resque
       end
     end
 
+    class QuitNowException < Exception; end
     # defer a signal for later processing in #join (master process)
     def trap_deferred(signal)
       trap(signal) do |sig_nr|
+        if @waiting_for_reaper && [:INT, :TERM].include?(signal)
+          log "Recieved #{signal}: short circuiting QUIT waitpid"
+          raise QuitNowException
+        end
         if sig_queue.size < SIG_QUEUE_MAX_SIZE
           sig_queue << signal
           awaken_master
@@ -146,8 +154,12 @@ module Resque
         log "#{signal}: sending to all workers"
         signal_all_workers(signal)
       when :HUP
-        log "HUP: reload config file"
+        log "HUP: reload config file and reload logfiles"
         load_config
+        Logging.reopen_logs!
+        log "HUP: gracefully shutdown old children (which have old logfiles open)"
+        signal_all_workers(:QUIT)
+        log "HUP: new children will inherit new logfiles"
         maintain_worker_count
       when :WINCH
         log "WINCH: gracefully stopping all workers"
@@ -178,9 +190,17 @@ module Resque
       init_sig_handlers!
       maintain_worker_count
       procline("(started)")
-      log "**** started master at PID: #{Process.pid}"
-      log "**** Pool contains PIDs: #{all_pids.inspect}"
+      log "started manager"
+      report_worker_pool_pids
       self
+    end
+
+    def report_worker_pool_pids
+      if workers.empty?
+        log "Pool is empty"
+      else
+        log "Pool contains worker PIDs: #{all_pids.inspect}"
+      end
     end
 
     def join
@@ -196,7 +216,7 @@ module Resque
       end
       procline("(shutting down)")
       #stop # gracefully shutdown all workers on our way out
-      log "**** master complete"
+      log "manager finished"
       #unlink_pid_safe(pid) if pid
     end
 
@@ -213,15 +233,17 @@ module Resque
     # worker process management {{{
 
     def reap_all_workers(waitpid_flags=Process::WNOHANG)
+      @waiting_for_reaper = waitpid_flags == 0
       begin
         loop do
+          # -1, wait for any child process
           wpid, status = Process.waitpid2(-1, waitpid_flags)
           wpid or break
           worker = delete_worker(wpid)
           # TODO: close any file descriptors connected to worker, if any
-          log "** reaped #{status.inspect}, worker=#{worker.queues.join(",")}"
+          log "Reaped resque worker[#{status.pid}] (status: #{status.exitstatus}) queues: #{worker.queues.join(",")}"
         end
-      rescue Errno::ECHILD
+      rescue Errno::ECHILD, QuitNowException
       end
     end
 
@@ -345,7 +367,7 @@ module Resque
     def spawn_worker!(queues)
       worker = create_worker(queues)
       pid = fork do
-        log "*** Starting worker #{worker}"
+        log_worker "Starting worker #{worker}"
         call_after_prefork!
         reset_sig_handlers!
         #self_pipe.each {|io| io.close }

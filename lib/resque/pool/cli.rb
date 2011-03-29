@@ -4,12 +4,13 @@ require 'resque/pool'
 module Resque
   class Pool
     module CLI
+      extend Logging
       extend self
 
       def run
         opts = parse_options
         daemonize if opts[:daemon]
-        pidfile opts[:pidfile]
+        manage_pidfile opts[:pidfile]
         redirect opts
         setup_environment opts
         start_pool
@@ -28,12 +29,12 @@ Usage:
    resque-pool [options]
 where [options] are:
           EOS
-          opt :config, "Alternate path to config file",                 :short => "-c"
-          opt :daemon, "Run as a background daemon", :default => false, :short => "-d"
-          opt :stdout, "Redirect stdout to logfile", :type => String,   :short => '-o'
-          opt :stderr, "Redirect stderr to logfile", :type => String,   :short => '-e'
+          opt :config, "Alternate path to config file", :type => String, :short => "-c"
+          opt :daemon, "Run as a background daemon", :default => false,  :short => "-d"
+          opt :stdout, "Redirect stdout to logfile", :type => String,    :short => '-o'
+          opt :stderr, "Redirect stderr to logfile", :type => String,    :short => '-e'
           opt :nosync, "Don't sync logfiles on every write"
-          opt :pidfile, "PID file location",         :type => String,   :short => "-p"
+          opt :pidfile, "PID file location",         :type => String,    :short => "-p"
           opt :environment, "Set RAILS_ENV/RACK_ENV/RESQUE_ENV", :type => String, :short => "-E"
         end
         if opts[:daemon]
@@ -52,40 +53,53 @@ where [options] are:
         exit unless pid.nil?
       end
 
-      def pidfile(pidfile)
+      def manage_pidfile(pidfile)
+        return unless pidfile
         pid = Process.pid
-        if pidfile
-          if File.exist? pidfile
-            old_pid = open(pidfile).read.strip
-            ps_output = `ps p #{old_pid}`
-            if ps_output =~ /#{old_pid}/
-              raise "Pidfile already exists at #{pidfile} and process is still running."
-            else
-              File.delete pidfile
-            end
+        if File.exist? pidfile
+          if process_still_running? pidfile
+            raise "Pidfile already exists at #{pidfile} and process is still running."
+          else
+            File.delete pidfile
           end
-          File.open pidfile, "w" do |f|
-            f.write pid
-          end
-          at_exit do
-            if Process.pid == pid
-              File.delete pidfile
-            end
+        end
+        File.open pidfile, "w" do |f|
+          f.write pid
+        end
+        at_exit do
+          if Process.pid == pid
+            File.delete pidfile
           end
         end
       end
 
+      def process_still_running?(pidfile)
+        old_pid = open(pidfile).read.strip.to_i
+        Process.kill 0, old_pid
+        true
+      rescue Errno::ESRCH
+        false
+      rescue Errno::EPERM
+        true
+      rescue ::Exception
+        $stderr.puts "While checking if PID #{old_pid} is running, unexpected #{e.class}: #{e}"
+        true
+      end
+
       def redirect(opts)
         $stdin.reopen  '/dev/null'        if opts[:daemon]
-        $stdout.reopen opts[:stdout], "a" if opts[:stdout] && !opts[:stdout].empty?
-        $stderr.reopen opts[:stderr], "a" if opts[:stderr] && !opts[:stderr].empty?
+        # need to reopen as File, or else Resque::Pool::Logging.reopen_logs! won't work
+        out = File.new(opts[:stdout], "a") if opts[:stdout] && !opts[:stdout].empty?
+        err = File.new(opts[:stderr], "a") if opts[:stderr] && !opts[:stderr].empty?
+        $stdout.reopen out if out
+        $stderr.reopen err if err
         $stdout.sync = $stderr.sync = true unless opts[:nosync]
       end
 
       def setup_environment(opts)
         ENV["RACK_ENV"] = ENV["RAILS_ENV"] = ENV["RESQUE_ENV"] = opts[:environment] if opts[:environment]
-        puts "Resque Pool running in #{ENV["RAILS_ENV"] || "development"} environment."
-        ENV["RESQUE_POOL_CONFIG"] = opts[:config].to_s if opts[:config]
+        log "Resque Pool running in #{ENV["RAILS_ENV"] || "development"} environment"
+        ENV["RESQUE_POOL_CONFIG"] = opts[:config] if opts[:config]
       end
 
       def start_pool

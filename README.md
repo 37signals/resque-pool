@@ -1,9 +1,10 @@
 Resque Pool
 ===========
 
-Resque pool is a simple library for managing a pool of resque workers.  Given a
-a config file, it manages your workers for you, starting up the appropriate
-number of workers for each.
+Resque pool is a simple library for managing a pool of
+[resque](http://github.com/defunkt/resque) workers.  Given a a config file, it
+manages your workers for you, starting up the appropriate number of workers for
+each worker type.
 
 Benefits
 ---------
@@ -12,11 +13,18 @@ Benefits
   will monitor your workers for you.  An example init.d script, monit config,
   and chef cookbook are provided.
 * Less memory - If you are using Ruby Enterprise Edition, or any ruby with
-  copy-on-write safe garbage collection, this should save you a lot of memory
+  copy-on-write safe garbage collection, this should save you a *lot* of memory
   when you are managing many workers.
 * Faster startup - when you start many workers at once, they would normally
   compete for CPU as they load their environments.  Resque-pool can load the
   environment once and fork all of the workers almost instantly.
+
+Upgrading?
+-----------
+
+See
+[Changelog.md](https://github.com/nevans/resque-pool/blob/master/Changelog.md)
+in case there are important or helpful changes.
 
 How to use
 -----------
@@ -102,15 +110,15 @@ SIGNALS
 
 The pool manager responds to the following signals:
 
-* `HUP`   - reload the config file, e.g. to change the number of workers per queue list
+* `HUP`   - reload the config file, reload logfiles, restart all workers.
 * `QUIT`  - send `QUIT` to each worker parent and shutdown the manager after all workers are done.
 * `INT`   - send `QUIT` to each worker parent and immediately shutdown manager
 * `TERM`  - send `TERM` to each worker parent and immediately shutdown manager
 * `WINCH` - send `QUIT` to each worker, but keep manager running (send `HUP` to reload config and restart workers)
-* `USR1`/`USR2`/`CONT` - send the signal on to all worker parents (see Resque docs).
+* `USR1`/`USR2`/`CONT` - pass the signal on to all worker parents (see Resque docs).
 
-After a `HUP`, workers that are no longer needed will be gracefully shutdown
-via `QUIT`.
+Use `HUP` to help logrotate run smoothly and to change the number of workers
+per worker type.
 
 Other Features
 --------------

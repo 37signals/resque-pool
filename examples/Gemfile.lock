@@ -1,5 +1,5 @@
 PATH
-  remote: .
+  remote: /home/nick/src/active/resque-pool
   specs:
     resque-pool (0.1.0.dev)
       rake
@@ -7,7 +7,6 @@ PATH
       trollop (~> 1.16)
 
 GEM
-  remote: http://rubygems.org/
   specs:
     SystemTimer (1.2.2)
     aruba (0.3.2)
